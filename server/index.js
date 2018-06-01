@@ -3,8 +3,11 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 const uuidv4 = require("uuid/v4");
+const Redis = require("redis");
 
 const app = express();
+const redisPublisher = Redis.createClient();
+const redisSubscriber = Redis.createClient();
 
 const PUBLIC_FOLDER = path.join(__dirname, "../public");
 const PORT = process.env.PORT || 5000;
@@ -25,6 +28,10 @@ function subscribe(socket, channel) {
     let socketSubscribed = socketsPerChannels.get(channel) || new Set();
     let channelSubscribed = channelsPerSocket.get(socket) || new Set();
 
+    if (socketSubscribed.size == 0) {
+        redisSubscriber.subscribe(channel);
+    }
+
     socketSubscribed = socketSubscribed.add(socket);
     channelSubscribed = channelSubscribed.add(channel);
 
@@ -41,6 +48,10 @@ function unsubscribe(socket, channel) {
 
     socketSubscribed.delete(socket);
     channelSubscribed.delete(channel);
+
+    if (socketSubscribed.size == 0) {
+        redisSubscriber.unsubscribe(channel);
+    }
 
     socketsPerChannels.set(channel, socketSubscribed);
     channelsPerSocket.set(socket, channelSubscribed);
@@ -68,6 +79,17 @@ function broadcastToSockets(channel, data) {
     });
 }
 
+/*
+ * Broadcast a message to all sockets connected across all instances.
+ */
+function broadcastToAll(channel, data) {
+    redisPublisher.publish(channel, data);
+}
+
+redisSubscriber.on("message", (channel, message) => {
+    broadcastToSockets(channel, message);
+});
+
 // Broadcast message from client
 wss.on("connection", ws => {
     ws.on('close', () => {
@@ -82,7 +104,7 @@ wss.on("connection", ws => {
                 subscribe(ws, message.channel);
                 break;
             default:
-                broadcastToSockets(message.channel, data);
+                broadcastToAll(message.channel, data);
                 break;
         }
     });
